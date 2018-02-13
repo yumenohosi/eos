@@ -589,6 +589,23 @@ class crypto_api : public context_aware_api {
       }
 };
 
+class permission_api : public context_aware_api {
+   public:
+      using context_aware_api::context_aware_api;
+
+      bool validate_permission( account_name account, permission_name permission, array_ptr<char> packed_pubkeys, size_t datalen) {
+         datastream<const char*> ds( packed_pubkeys, datalen );
+         vector<public_key_type> pub_keys;
+         fc::raw::unpack(ds, pub_keys);
+
+         return context.controller.validate_permission(
+            account, permission,
+            {pub_keys.begin(), pub_keys.end()},
+            false
+         );
+      }
+};
+
 class string_api : public context_aware_api {
    public:
       using context_aware_api::context_aware_api;
@@ -992,6 +1009,10 @@ REGISTER_INTRINSICS(crypto_api,
    (sha256,         void(int, int, int))
    (sha512,         void(int, int, int))
    (ripemd160,      void(int, int, int))
+);
+
+REGISTER_INTRINSICS(permission_api,
+   (validate_permission,  int(int64_t, int64_t, int, int))
 );
 
 REGISTER_INTRINSICS(string_api,
