@@ -172,7 +172,7 @@ if(WASM_TOOLCHAIN)
   message(STATUS "Using WASM llvm-link => " ${WASM_LLVM_LINK})
   add_subdirectory(contracts)
 else()
-  message( FATAL_ERROR "No WASM compiler cound be found" )
+  message( FATAL_ERROR "No WASM compiler could be found" )
 endif()
 
 include(installer)

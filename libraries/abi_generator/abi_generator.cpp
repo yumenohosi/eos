@@ -184,7 +184,7 @@ void abi_generator::get_all_fields(const struct_def& s, vector<field_def>& field
   for(const auto& field : s.fields) {
     fields.push_back(field);
   }
-  if(s.base.size()) {
+   if(s.base.size()) {
     const auto* base = find_struct(s.base);
     ABI_ASSERT(base, "Unable to find base type ${type}",("type",s.base));
     get_all_fields(*base, fields);
@@ -211,7 +211,7 @@ void abi_generator::guess_index_type(table_def& table, const struct_def s) {
 
   vector<field_def> fields;
   get_all_fields(s, fields);
-  
+
   if( is_str_index(fields) ) {
     table.index_type = "str";
   } else if ( is_i64i64i64_index(fields) ) {
@@ -230,15 +230,28 @@ void abi_generator::guess_key_names(table_def& table, const struct_def s) {
   vector<field_def> fields;
   get_all_fields(s, fields);
 
-  if( table.index_type == "i64i64i64" && is_i64i64i64_index(fields) ) {
-    table.key_names  = vector<field_name>{fields[0].name, fields[1].name, fields[2].name};
-    table.key_types  = vector<type_name>{fields[0].type, fields[1].type, fields[2].type};
-  } else if( table.index_type == "i128i128" && is_i128i128_index(fields) ) {
-    table.key_names  = vector<field_name>{fields[0].name, fields[1].name};
-    table.key_types  = vector<type_name>{fields[0].type, fields[1].type};
-  } else if( table.index_type == "i64" && is_i64_index(fields) ) {
-    table.key_names  = vector<field_name>{fields[0].name};
-    table.key_types  = vector<type_name>{fields[0].type};
+ if( table.index_type == "i64i64i64" || table.index_type == "i128i128" 
+    || table.index_type == "i64") {
+    
+    table.key_names.clear();
+    table.key_types.clear();
+
+    unsigned int key_size = 0;
+    bool valid_key = false;
+    for(auto& f : fields) {
+      table.key_names.emplace_back(f.name);
+      table.key_types.emplace_back(f.type);
+      key_size += type_size[f.type]/8;
+
+      if((table.index_type == "i64i64i64" && key_size >= sizeof(uint64_t)*3) ||
+         (table.index_type == "i64" && key_size >= sizeof(uint64_t)) ||
+         (table.index_type == "i128i128" && key_size >= sizeof(__int128)*2)) {
+        valid_key = true;
+        break;
+      }
+    }
+
+    ABI_ASSERT(valid_key, "Unable to guess key names");
   } else if( table.index_type == "str" && is_str_index(fields) ) {
     table.key_names  = vector<field_name>{fields[0].name};
     table.key_types  = vector<type_name>{fields[0].type};
@@ -306,19 +319,31 @@ string abi_generator::decl_to_string(clang::Decl* d) {
         sm.getCharacterData(e)-sm.getCharacterData(b));
 }
 
-void abi_generator::add_typedef(const clang::TypedefType* typeDef) {
+clang::QualType abi_generator::add_typedef(const clang::TypedefType* typeDef) {
 
   vector<type_def> types_to_add;
-  while(typeDef != nullptr) {
-    const auto* typedef_decl = typeDef->getDecl();
-    auto qt = typedef_decl->getUnderlyingType().getUnqualifiedType();
 
+  clang::QualType qt;
+  while(typeDef != nullptr) {
+
+    const auto* typedef_decl = typeDef->getDecl();
+    qt = typedef_decl->getUnderlyingType().getUnqualifiedType();
+    
+    int vector_dimension = 0;
+    qt = get_vector_type(qt, vector_dimension);
+    
     auto full_name = translate_type(qt.getAsString(compiler_instance->getLangOpts()));
 
-    //HACK: We need to think another way to stop importing the "typedef chain"
-    if( full_name.find("<") != string::npos ) {
-      break;
+    ABI_ASSERT(vector_dimension < 2, "Only one-dimensional arrays are supported");
+
+    for(int i=0; i<vector_dimension; ++i) {
+      full_name += "[]";
     }
+
+    const auto* tst = clang::dyn_cast<const clang::TemplateSpecializationType>(qt.getTypePtr());
+    if(tst != nullptr) {
+      break;
+    };
 
     auto new_type_name = translate_type(typedef_decl->getName().str());
     if(is_builtin_type(new_type_name)) {
@@ -337,7 +362,6 @@ void abi_generator::add_typedef(const clang::TypedefType* typeDef) {
       continue;
     }
 
-    //ilog("addTypeDef => ${a} ${b} [${c}]", ("a",abi_typedef.new_type_name)("b",abi_typedef.type)("c",getFullScope(qt)));
     ABI_ASSERT(abi_typedef.new_type_name != abi_typedef.type, 
         "Unable to export typedef `${td}` at ${at}",
         ("td",decl_to_string(typeDef->getDecl()))
@@ -350,33 +374,81 @@ void abi_generator::add_typedef(const clang::TypedefType* typeDef) {
 
   std::reverse(types_to_add.begin(), types_to_add.end());
   output->types.insert(output->types.end(), types_to_add.begin(), types_to_add.end());
+
+  return qt;
 }
 
-string abi_generator::get_name_to_add(const clang::QualType& qual_type) {
+clang::QualType abi_generator::get_vector_type(const clang::QualType& qual_type, int& dimension) {
 
-  auto type_name = qual_type.getAsString(compiler_instance->getLangOpts());
-  const auto* typedef_type = qual_type->getAs<clang::TypedefType>();
+  clang::QualType qt(qual_type);
+
+  dimension = 0;
+  if( clang::isa<const clang::ElaboratedType>(qt.getTypePtr()) ) {
+    qt = clang::dyn_cast<const clang::ElaboratedType>(qt.getTypePtr())->getNamedType();
+  }
+  const auto* tst = clang::dyn_cast<const clang::TemplateSpecializationType>(qt.getTypePtr());
+  while(tst != nullptr && boost::starts_with( qt.getAsString(), "vector") ) {
+    ++dimension;
+    
+    const clang::TemplateArgument& arg0 = tst->getArg(0);
+    qt = arg0.getAsType();
+    
+    if( clang::isa<const clang::ElaboratedType>(qt.getTypePtr()) ) {
+      qt = clang::dyn_cast<const clang::ElaboratedType>(qt.getTypePtr())->getNamedType();
+    }
+    tst = clang::dyn_cast<const clang::TemplateSpecializationType>(qt.getTypePtr());
+  }
+
+  return qt;
+}
+
+string abi_generator::get_type_name(const clang::QualType& qual_type) {
+  
+  clang::QualType qt(qual_type);
+
+  int vector_dimension = 0;
+  qt = get_vector_type(qt, vector_dimension);
+  auto type_name = translate_type(qt.getAsString(compiler_instance->getLangOpts()));
+  ABI_ASSERT(vector_dimension < 2, "Only one-dimensional arrays are supported");
+
+  if( vector_dimension > 0 ) {
+    add_struct(qt);
+    while(vector_dimension--) { type_name += "[]"; }
+    return type_name;
+  }
+
+  const auto* typedef_type = qt->getAs<clang::TypedefType>();
   if( !is_builtin_type(type_name) && typedef_type != nullptr) {
     add_typedef(typedef_type);
-  } 
+  }
 
+  add_struct(qt);
   return type_name;
+}
+
+bool abi_generator::is_vector(const std::string& type) {
+  return boost::ends_with(type, "[]");
+}
+
+string abi_generator::get_vector_element_type(const std::string& type) {
+  if(is_vector(type))
+    return get_vector_element_type(type.substr(0, type.size()-2));
+  return type;
 }
 
 string abi_generator::add_struct(const clang::QualType& qual_type) {
 
   ABI_ASSERT(output != nullptr);
-
+  
   const auto* record_type = qual_type->getAs<clang::RecordType>();
-  ABI_ASSERT(record_type != nullptr);
+  if(record_type == nullptr) return "";
   
   const auto* record_decl = clang::cast_or_null<clang::CXXRecordDecl>(record_type->getDecl()->getDefinition());
-  ABI_ASSERT(record_decl != nullptr);
+  if(record_decl == nullptr) return "";
 
   ASTContext& ctx = record_decl->getASTContext();
-
-  auto full_name = get_name_to_add(qual_type);
-
+  
+  auto full_name = qual_type.getAsString(compiler_instance->getLangOpts());
   auto name = remove_namespace(full_name);
 
   //Only export user defined types
@@ -409,36 +481,35 @@ string abi_generator::add_struct(const clang::QualType& qual_type) {
   string base_name;
   if( total_bases == 1 ) {
     auto qt = bases.begin()->getType();
-    base_name = add_struct(qt);
+    base_name = translate_type(remove_namespace(get_type_name(qt)));
   }
 
   struct_def abi_struct;
-  for (const auto& field : record_decl->fields()) {
-    
+  for (const clang::FieldDecl* field : record_decl->fields()) {
     field_def struct_field;
 
     clang::QualType qt = field->getType();
-
-    auto field_type = translate_type(remove_namespace(get_name_to_add(qt.getUnqualifiedType())));
-
+    auto field_type = translate_type(remove_namespace(get_type_name(qt)));
+    
     ABI_ASSERT(field_type.size() <= sizeof(decltype(struct_field.type)),
       "Type name > ${maxsize}, ${type}::${name}", ("type",full_name)("name",field_type)("maxsize",sizeof(decltype(struct_field.type))));
 
     ABI_ASSERT(field->getNameAsString().size() <= sizeof(decltype(struct_field.name)) , 
       "Field name > ${maxsize}, ${type}::${name}", ("type",full_name)("name",field->getNameAsString())("maxsize", sizeof(decltype(struct_field.name))));
-    
-    if( qt->getAs<clang::RecordType>() ) {
-      add_struct(qt);
-      //TODO: simplify if OPT_SINGLE_FIELD_STRUCT is enabled
-    }
-    
+
     struct_field.name = field->getNameAsString();
     struct_field.type = field_type;
 
-    ABI_ASSERT(is_builtin_type(struct_field.type) || find_struct(struct_field.type), "Unknown type ${type} ${name} ${ttt} ${sss}", ("type",struct_field.type)("name",struct_field.name)("types", output->types)("structs",output->structs));
+    auto element_type = get_vector_element_type(resolve_type(field_type));
+    ABI_ASSERT(is_builtin_type(element_type) || find_struct(element_type), "Unknown type ${ftype} ${type} ${name} ${ttt} ${sss} ${abi}", ("ftype",field_type)("type",element_type)("name",struct_field.name)("types", output->types)("structs",output->structs)("abi",*output));
 
-    type_size[string(struct_field.type)] = ctx.getTypeSize(qt);
+    type_size[string(field_type)] = is_vector(field_type) ? 0 : ctx.getTypeSize(qt);
+
     abi_struct.fields.push_back(struct_field);
+  }
+  
+  if( abi_struct.fields.size() == 0 ){
+    return base_name;
   }
 
   abi_struct.name = resolve_type(name);

@@ -161,11 +161,17 @@ namespace eosio {
 
          string decl_to_string(clang::Decl* d);
 
-         void add_typedef(const clang::TypedefType* typeDef);
+         clang::QualType add_typedef(const clang::TypedefType* typeDef);
 
-         string get_name_to_add(const clang::QualType& qual_type);
+         string get_type_name(const clang::QualType& qual_type);
 
          string add_struct(const clang::QualType& qual_type);
+
+         clang::QualType get_vector_type(const clang::QualType& qt, int& dimension);
+
+         bool is_vector(const std::string& type);
+
+         string get_vector_element_type(const std::string& type);
    };
    
    struct abi_generator_astconsumer : public ASTConsumer {
