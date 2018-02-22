@@ -193,21 +193,21 @@ struct sig_hash_key {
 
 void test_crypto::test_recover_key_assert_true() {
    sig_hash_key sh;
-   int read = read_action( (char*)&sh, sizeof(sh) );
+   int read = read_action_data( (char*)&sh, sizeof(sh) );
    public_key public_key;
    assert_recover_key( &sh.hash, (const char*)&sh.sig, sizeof(sh.sig), (const char*)&sh.pk, sizeof(sh.pk) );
 }
 
 void test_crypto::test_recover_key_assert_false() {
    sig_hash_key sh;
-   int read = read_action( (char*)&sh, sizeof(sh) );
+   int read = read_action_data( (char*)&sh, sizeof(sh) );
    assert_recover_key( &sh.hash, (const char*)&sh.sig, sizeof(sh.sig), (const char*)&sh.pk, sizeof(sh.pk) );
    eosio_assert( false, "should have thrown an error" );
 }
 
 void test_crypto::test_recover_key() {
    sig_hash_key sh;
-   int read = read_action( (char*)&sh, sizeof(sh) );
+   int read = read_action_data( (char*)&sh, sizeof(sh) );
    public_key pk;
    int recovered = recover_key( &sh.hash, (const char*)&sh.sig, sizeof(sh.sig), pk.data, sizeof(pk) );
    for ( int i=0; i < sizeof(pk); i++ )
