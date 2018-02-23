@@ -7,7 +7,7 @@
 #include <functional>
 #include <tuple>
 
-namespace  eosio {
+namespace eosio {
 
    /**
     *  @brief Converts a base32 symbol into its binary representation, used by string_to_name()
@@ -92,7 +92,7 @@ namespace  eosio {
 
    /// @}
 
-} // namespace eos
+} // namespace eosio
 
 namespace std {
    /**
@@ -117,3 +117,10 @@ namespace std {
    };
 
 } // namespace std
+
+/**
+ * Provide == for checksum256 in global namespace
+ */
+bool operator==(const checksum256& lhs, const checksum256& rhs) {
+   return memcmp(&lhs, &rhs, sizeof(lhs)) == 0;
+}
